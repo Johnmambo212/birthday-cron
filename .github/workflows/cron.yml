@@ -1,0 +1,125 @@
+name: Birthday Greeting Cron
+
+on:
+  schedule:
+    # Setiap hari jam 01:00 UTC = 08:00 WIB
+    # Ubah sesuai kebutuhan:
+    #   07:00 WIB = '0 0 * * *'
+    #   08:00 WIB = '0 1 * * *'  <-- DEFAULT
+    #   09:00 WIB = '0 2 * * *'
+    - cron: '0 1 * * *'
+
+  # Bisa trigger manual dari tab Actions
+  workflow_dispatch:
+
+jobs:
+  send-greetings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Puppeteer
+        run: |
+          npm init -y
+          npm install puppeteer
+
+      - name: Run Birthday Cron
+        run: |
+          node << 'SCRIPT'
+          const puppeteer = require('puppeteer');
+
+          (async () => {
+            const CRON_URL = process.env.CRON_URL;
+
+            if (!CRON_URL) {
+              console.error('ERROR: Secret CRON_URL belum diset!');
+              console.error('Buka: Settings > Secrets > Actions > New secret');
+              console.error('Name: CRON_URL');
+              console.error('Value: https://stafbirthday.infinityfree.io/cron.php?key=abc123xyz789');
+              process.exit(1);
+            }
+
+            console.log('======================================');
+            console.log('  Birthday Greeting Cron');
+            console.log('======================================');
+            console.log('UTC :', new Date().toISOString());
+            console.log('WIB :', new Date(Date.now() + 7*3600000).toISOString());
+            console.log('URL :', CRON_URL.replace(/key=([^&]+)/, 'key=***'));
+            console.log('======================================');
+
+            let browser;
+            try {
+              console.log('\nMembuka browser...');
+              browser = await puppeteer.launch({
+                headless: 'new',
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+              });
+
+              const page = await browser.newPage();
+              await page.setUserAgent(
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+              );
+              page.setDefaultNavigationTimeout(60000);
+              page.setDefaultTimeout(60000);
+
+              console.log('Mengakses URL cron...');
+              await page.goto(CRON_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+
+              console.log('Menunggu proses...');
+              await new Promise(r => setTimeout(r, 8000));
+
+              const bodyText = await page.evaluate(() => document.body.innerText);
+
+              console.log('\n======================================');
+              console.log('HASIL:');
+              console.log('======================================');
+
+              if (bodyText.includes('birthdays_found') || bodyText.includes('"status"')) {
+                console.log('PHP Cron BERHASIL dieksekusi!\n');
+                console.log(bodyText);
+
+                try {
+                  const result = JSON.parse(bodyText);
+                  console.log('\nRingkasan:');
+                  console.log('  Status  :', result.status);
+                  console.log('  Tanggal :', result.date_wib);
+                  console.log('  Ultah   :', result.birthdays_found, 'karyawan');
+                  if (result.results && result.results.length > 0) {
+                    console.log('\nDetail:');
+                    result.results.forEach(r => {
+                      console.log('  ' + (r.status === 'SUCCESS' ? 'OK' : 'FAIL') + ' ' + r.employee + ' (' + r.phone + ')');
+                    });
+                  }
+                } catch (e) {}
+
+              } else if (bodyText.includes('aes.js') || bodyText.includes('slowAES')) {
+                console.log('MASIH TERBLOKIR JS Challenge!');
+                console.log('Coba jalankan ulang beberapa menit lagi.');
+                process.exit(1);
+
+              } else if (bodyText.includes('403') || bodyText.includes('Unauthorized')) {
+                console.log('UNAUTHORIZED! Cek CRON_SECRET.');
+                process.exit(1);
+
+              } else {
+                console.log('Response tidak dikenali:');
+                console.log(bodyText.substring(0, 1000));
+              }
+
+              console.log('\nSelesai!');
+
+            } catch (error) {
+              console.error('ERROR:', error.message);
+              process.exit(1);
+            } finally {
+              if (browser) await browser.close();
+            }
+          })();
+          SCRIPT
+        env:
+          CRON_URL: ${{ secrets.CRON_URL }}
